@@ -1,0 +1,29 @@
+# Секреты: токен бота и личные настройки. НИКОГДА не коммить.
+.env
+
+# Данные бота: база с пользователями и перепиской, логи, резервные копии базы Bionic.
+data/
+
+# Виртуальное окружение Python
+.venv/
+venv/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Базы данных (на случай, если окажутся вне data/)
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.db
+
+# Редакторы и ОС
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

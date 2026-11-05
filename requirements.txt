@@ -1,0 +1,10 @@
+aiogram==3.31.0
+aiosqlite==0.22.1
+httpx==0.28.1
+pypdf==6.21.4
+python-docx==1.2.0
+python-dotenv==1.2.4
+
+# Для тестов
+pytest==9.2.0
+pytest-asyncio==1.4.1.post1
