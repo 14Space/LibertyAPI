@@ -166,7 +166,7 @@ async def test_admin_commands_are_closed_for_users(rig):
     await rig.send(FRIEND, "/giveaccess @stranger")
     await rig.send(FRIEND, "/users")
     assert (await rig.db.find("stranger")) is None
-    # Админские команды для обычного пользователя — неизвестные, бот на них молчит.
+    # Админские команды для обычного пользователя: неизвестные, бот на них молчит.
     assert rig.session.texts(FRIEND[0]) == []
     assert rig.llm.requests == []
 
