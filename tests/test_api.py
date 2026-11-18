@@ -88,6 +88,11 @@ async def test_reply_length_is_capped(api):
     assert (await client.post("/v1/chat/completions", json=body, headers=AUTH)).status == 200
     assert captured["max"] == 200          # не больше REPLY_MAX_TOKENS из настроек
 
+    # Короткий ответ – законная просьба, а не «слишком длинный разговор» (было 413).
+    body = {**QUESTION, "max_tokens": 20}
+    assert (await client.post("/v1/chat/completions", json=body, headers=AUTH)).status == 200
+    assert captured["max"] == 20
+
 
 async def test_model_error_is_503_and_worker_survives(api):
     client, _, llm, _ = api

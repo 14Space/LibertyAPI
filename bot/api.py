@@ -73,11 +73,18 @@ def parse_messages(body: object) -> list[dict] | None:
     return clean
 
 
-def reply_room(config: Config, messages: list[dict], requested: object) -> int:
-    """Сколько токенов дать на ответ: сколько просят, но не больше лимита и свободного места."""
+def reply_room(config: Config, messages: list[dict], requested: object) -> int | None:
+    """Сколько токенов дать на ответ: сколько просят, но не больше лимита и свободного места.
+
+    None – разговор не оставляет места на ответ. Проверяется именно свободное место, а не
+    просьба: короткий ответ (max_tokens=20) – законная просьба, а не «слишком длинный
+    разговор» (так ошибочно отвечала первая версия 18.11.2026).
+    """
+    free = config.context_length - context.messages_tokens(messages) - GENERATION_MARGIN
+    if free < MIN_REPLY_TOKENS:
+        return None
     if not isinstance(requested, int) or isinstance(requested, bool) or requested <= 0:
         requested = config.reply_max_tokens
-    free = config.context_length - context.messages_tokens(messages) - GENERATION_MARGIN
     return min(requested, config.reply_max_tokens, free)
 
 
@@ -95,7 +102,7 @@ def build_app(worker: Worker, config: Config) -> web.Application:
         if messages is None:
             return _error(400, "messages must be a list of {role, content} with text")
         max_tokens = reply_room(config, messages, body.get("max_tokens"))
-        if max_tokens < MIN_REPLY_TOKENS:
+        if max_tokens is None:
             return _error(413, "conversation is too long for the model context")
 
         started = time.monotonic()
