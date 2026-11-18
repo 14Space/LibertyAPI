@@ -23,6 +23,9 @@ SUMMARY_SHARE = 0.25
 GENERATION_MARGIN = 256
 BIONIC_FAILURE_NOTE = "Синхронизация с Bionic не удалась, чат сохранён только в боте"
 IMAGE_MARK = "[Фото из Telegram]"
+# Запрос по API (api.py) не принадлежит человеку из базы: id в Telegram у людей
+# положительные, поэтому этот номер ни с кем не совпадёт.
+API_USER = -1
 
 STATUS_THINKING = "Думаю..."
 STATUS_LOADING = "Загружаю модель..."
@@ -44,7 +47,22 @@ class Submit(Enum):
     BUSY = auto()
 
 
-@dataclass
+class SilentReply:
+    """Ответ по API никуда не выводится по ходу: его забирают целиком из job.answer."""
+
+    async def status(self, text: str) -> None:
+        pass
+
+    async def update(self, text: str) -> None:
+        pass
+
+    async def finish(self, text: str) -> None:
+        pass
+
+
+# eq=False: запросы сравниваются как объекты. Иначе два запроса по API с одинаковым
+# текстом считались бы одним, и снятие одного из очереди могло убрать другой.
+@dataclass(eq=False)
 class Job:
     user_id: int
     text: str
@@ -56,6 +74,12 @@ class Job:
     stop_requested: bool = False
     discard: bool = False
     finished: asyncio.Event = field(default_factory=asyncio.Event)
+    # Только у запросов по API: готовый разговор от другого бота. Своя история уже
+    # внутри, поэтому база, сжатие и Bionic таким запросам не нужны.
+    messages: list[dict] | None = None
+    max_tokens: int = 0
+    model: str = ""
+    failed: bool = False
 
 
 class Worker:
@@ -99,6 +123,31 @@ class Worker:
             self._pending.append(job)
             self._wake.set()
             return Submit.QUEUED
+
+    async def submit_api(self, messages: list[dict], max_tokens: int) -> Job:
+        """Ставит запрос по API в общую очередь, в конец, как любого человека.
+
+        Ответ появится в job.answer, когда сработает job.finished; job.failed значит,
+        что модель была недоступна.
+        """
+        job = Job(API_USER, "", [], SilentReply(), messages=messages, max_tokens=max_tokens)
+        async with self._submit_lock:
+            self._pending.append(job)
+            self._wake.set()
+        return job
+
+    async def drop(self, job: Job) -> None:
+        """Снимает запрос, ответа на который больше никто не ждёт (истёк срок API)."""
+        if job in self._pending:
+            self._pending.remove(job)
+            job.finished.set()
+            await self._refresh_positions()
+            return
+        if job is self._current and job.task:
+            job.stop_requested = True
+            job.discard = True
+            job.task.cancel()
+            await job.finished.wait()
 
     async def cancel(self, user_id: int, discard: bool = False) -> bool:
         """Отменяет запрос пользователя. С discard частичный ответ не сохраняется."""
@@ -147,9 +196,11 @@ class Worker:
             await self._finish_stopped(job)
         except LLMError as exc:
             log.error("Ошибка модели: %s", exc)
+            job.failed = True
             await self._report(job, "Модель сейчас недоступна, попробуй чуть позже")
         except Exception:
             log.exception("Сбой при обработке запроса")
+            job.failed = True
             await self._report(job, "Что-то пошло не так, попробуй ещё раз")
         finally:
             self._current = None
@@ -161,6 +212,9 @@ class Worker:
         # Bionic). Поднимаем его прежде, чем запрашивать список моделей, иначе падаем здесь.
         await self._llm.start_server()
         model = await self.active_model()
+        if job.messages is not None:
+            await self._process_api(job, model)
+            return
         if job.images and not model.vision:
             await job.reply.finish(
                 f"Текущая модель ({model.name}) не умеет смотреть изображения. "
@@ -179,6 +233,16 @@ class Worker:
         await job.reply.status(STATUS_THINKING)
         await self._generate(job, model_id, messages)
         await self._save_and_finish(job)
+
+    async def _process_api(self, job: Job, model: ModelInfo) -> None:
+        """Запрос по API: та же модель, что выбрал админ, но без базы и Bionic.
+
+        Длина ответа уже посчитана в api.py, поэтому здесь её не трогаем.
+        """
+        job.model = model.key
+        model_id = await self._llm.ensure_loaded(model.key)
+        async for delta in self._llm.stream_chat(model_id, job.messages, job.max_tokens):
+            job.answer += delta.content
 
     async def _generate(self, job: Job, model_id: str, messages: list[dict]) -> None:
         """Генерация идёт столько, сколько нужно: таймаута нет, остановить можно /stop.

@@ -1,6 +1,6 @@
 """Настройки бота из файла .env."""
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -32,6 +32,14 @@ class Config:
     reasoning_effort: str = "none"
     # Проект Bionic, где виден чат админа. Пустое значение выключает синхронизацию.
     bionic_project: str = ""
+    # API для других ботов (api.py). Пустой адрес выключает его. Слушаем только адрес
+    # Tailscale, поэтому из домашней сети и из интернета API не видно.
+    api_host: str = ""
+    api_port: int = 8765
+    # Имя бота -> его ключ. Имя нужно только для логов: видно, кто спрашивал.
+    api_keys: dict[str, str] = field(default_factory=dict)
+    # Сколько запрос по API ждёт вместе с очередью и загрузкой модели. Потом снимается.
+    api_timeout: int = 180
 
     @property
     def prompt_budget(self) -> int:
@@ -68,7 +76,35 @@ def load_config() -> Config:
         db_path=ROOT / "data" / "bot.db",
         reasoning_effort=os.getenv("REASONING_EFFORT", "none").strip(),
         bionic_project=os.getenv("BIONIC_PROJECT", "").strip(),
+        api_host=os.getenv("API_HOST", "").strip(),
+        api_port=int(os.getenv("API_PORT", "8765")),
+        api_keys=parse_api_keys(os.getenv("API_KEYS", "")),
+        api_timeout=int(os.getenv("API_TIMEOUT", "180")),
     )
     if config.reply_max_tokens >= config.context_length:
         raise SystemExit("REPLY_MAX_TOKENS должен быть меньше CONTEXT_LENGTH.")
+    if config.api_host and not config.api_keys:
+        raise SystemExit("API включён (API_HOST), но в API_KEYS нет ни одного ключа.")
     return config
+
+
+# Короткий ключ можно подобрать перебором, а API открыт для сети Tailscale.
+MIN_API_KEY_LENGTH = 24
+
+
+def parse_api_keys(raw: str) -> dict[str, str]:
+    """Разбирает строку «имя:ключ,имя2:ключ2» из API_KEYS.
+
+    В тексте ошибки только номер записи: сам ключ в окно и в лог не попадает.
+    """
+    keys = {}
+    for number, item in enumerate((x for x in raw.split(",") if x.strip()), start=1):
+        name, sep, key = item.partition(":")
+        name, key = name.strip(), key.strip()
+        if not sep or not name or len(key) < MIN_API_KEY_LENGTH:
+            raise SystemExit(
+                f"API_KEYS: запись №{number} должна быть вида имя:ключ, "
+                f"ключ не короче {MIN_API_KEY_LENGTH} символов."
+            )
+        keys[name] = key
+    return keys

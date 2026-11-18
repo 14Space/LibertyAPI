@@ -7,6 +7,7 @@ from logging.handlers import RotatingFileHandler
 
 from aiogram import Bot, Dispatcher
 
+from .api import serve_api
 from .bionic import BionicChats
 from .config import ROOT, Config, load_config
 from .db import Database
@@ -73,6 +74,7 @@ async def main() -> None:
     bot = Bot(config.bot_token)
     worker = Worker(llm, db, config, await connect_bionic(config))
     worker_task: asyncio.Task | None = None
+    api_task: asyncio.Task | None = None
 
     # Всё закрывается и при сбое на старте: незакрытая база держит процесс живым,
     # и start.bat не смог бы перезапустить бота.
@@ -92,13 +94,16 @@ async def main() -> None:
         dispatcher.include_router(build_router(bot, db, llm, worker, config))
 
         worker_task = asyncio.create_task(worker.run())
+        api_task = asyncio.create_task(serve_api(worker, config))
         me = await bot.get_me()
         logging.info("Бот @%s запущен, админ @%s", me.username, config.admin_username)
         await dispatcher.start_polling(bot, handle_signals=False)
     finally:
-        if worker_task:
-            worker_task.cancel()
-            await asyncio.gather(worker_task, return_exceptions=True)
+        # API первым: пока он закрывается, очередь ещё может снять его запросы.
+        for task in (api_task, worker_task):
+            if task:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
         await llm.unload_own_model()
         await llm.close()
         await db.close()
